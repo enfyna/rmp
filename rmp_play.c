@@ -15,7 +15,7 @@
 
 #include "rmp.h"
 
-#define CMD_DURATION "ffmpeg -i \"%s\" 2>&1 | grep Duration | sed -E 's/.*Duration: ([0-9]{2}:[0-9]{2}:[0-9]{2}).*/\\1/'"
+#define CMD_DURATION "ffprobe -v error -show_entries format=duration -of csv=p=0 \"%s\" 2>/dev/null"
 #define CMD_CVLC "cvlc \"%s%s\" --no-volume-save --play-and-exit 2>/dev/null" // --gain 0.3 --volume-step 0.1 --norm-max-level 0.01
 #define DELETED_FILE_NAME "%s.removed.%s.bak"
 
@@ -62,20 +62,7 @@ int get_music_duration(char* music_name)
     char res[BUF_SIZE] = { 0 };
     run_shell_command(res, BUF_SIZE, cmd);
 
-    int total_time = 0;
-    int time_mul = 1;
-
-    for (size_t i = strlen(res) - 2; i > 0; i--) {
-        if (res[i] == ':') {
-            time_mul *= 6;
-            time_mul /= 10;
-        } else {
-            total_time += (res[i] - '0') * time_mul;
-            time_mul *= 10;
-        }
-    }
-
-    return total_time;
+    return strtod(res, NULL);
 }
 
 void get_time_str(wchar_t* buf, size_t size, long elapsed_seconds)
@@ -90,6 +77,34 @@ void get_time_str(wchar_t* buf, size_t size, long elapsed_seconds)
     swprintf(buf, size, L"%02d:%02d:%02d", hours, minutes, seconds);
 }
 
+const char* music_name_trim_suffix(const char* music_name)
+{
+    static char buf[NAME_MAX + 1];
+
+    // music_name.hashxxxxxxx.mp3
+
+    int len = strlen(music_name);
+    if (len < 3)
+        return music_name;
+
+    if (len < 16) {
+        snprintf(buf, NAME_MAX + 1, "%.*s", len - 4, music_name);
+        return buf;
+    }
+
+    if (music_name[len - 16] == '.') {
+        snprintf(buf, NAME_MAX + 1, "%.*s", len - 16, music_name);
+        return buf;
+    }
+
+    if (music_name[len - 4] == '.') {
+        snprintf(buf, NAME_MAX + 1, "%.*s", len - 4, music_name);
+        return buf;
+    }
+
+    return music_name;
+}
+
 void load_music_from(DIR* dir, music_list* list, char* category)
 {
     if (dir == NULL) {
@@ -99,6 +114,7 @@ void load_music_from(DIR* dir, music_list* list, char* category)
 
     char buf[BUF_SIZE * 2] = { 0 };
     char buf2[BUF_SIZE] = { 0 };
+    char buf3[BUF_SIZE] = { 0 };
 
     bool is_this_global_and_excluded = false;
 
@@ -116,52 +132,47 @@ void load_music_from(DIR* dir, music_list* list, char* category)
 
         if (ent->d_type == DT_DIR) {
             bool isExcluded = false;
+
+            if (category == NULL)
+                sprintf(buf3, "%s", ent->d_name);
+            else
+                sprintf(buf3, "%s/%s", category, ent->d_name);
+
             if (list->exclude != NULL) {
                 sprintf(buf2, "%s", list->exclude);
                 for (char* tok = strtok(buf2, " "); !isExcluded && tok != NULL; tok = strtok(NULL, " ")) {
-                    isExcluded = strcmp(tok, ent->d_name) == 0;
+                    isExcluded = strcmp(tok, buf3) == 0 || strcmp(tok, ent->d_name) == 0;
                 }
             }
             if (isExcluded)
                 continue;
 
-            DIR* sub;
-            if (category == NULL)
-                sprintf(buf2, "%s", ent->d_name);
-            else
-                sprintf(buf2, "%s/%s", category, ent->d_name);
+            snprintf(buf, BUF_SIZE * 2, "%s/%s", list->path, buf3);
 
-            snprintf(buf, BUF_SIZE * 2, "%s/%s", list->path, buf2);
-
-            sub = opendir(buf);
-            load_music_from(sub, list, buf2);
+            DIR* sub = opendir(buf);
+            load_music_from(sub, list, buf3);
             if (sub == NULL) {
                 wprintf(L"Couldnt open path: %ls\n", buf);
                 wprintf(L"Errno[%d]: %ls\n", errno, strerror(errno));
             } else {
                 closedir(sub);
             }
-        }
-        if (ent->d_type == DT_REG) {
+        } else if (ent->d_type == DT_REG) {
             if (is_this_global_and_excluded)
                 continue;
 
             char file_name[NAME_MAX];
             strcpy(file_name, ent->d_name);
-
-            char* ext = NULL;
-            for (char* tok = strtok(file_name, "."); tok != NULL; tok = strtok(NULL, ".")) {
-                ext = tok;
-            }
-
-            if (ext == NULL)
+            size_t file_name_len = strlen(file_name);
+            if (file_name_len < 3)
                 continue;
 
-            for (size_t i = 0; i < strlen(ext); i++) {
+            char* ext = &file_name[file_name_len - 3];
+            for (size_t i = 0; i < 3; i++) {
                 ext[i] = tolower(ext[i]);
             }
 
-            if (strcmp(ext, "mp3"))
+            if (strcmp(ext, "mp3") != 0)
                 continue;
 
             music* m = &list->musics[list->count];
@@ -380,7 +391,7 @@ int rmp_play(int argc, char** argv)
             music* m = get_music(&list, run + i);
             total_duration += m->duration;
             get_time_str(wbuf, BUF_SIZE, m->duration);
-            printt(L"\n", L"-|%3zu|%ls/%s%s", i + 1, wbuf, m->category, m->name);
+            printt(L"\n", L"-|%3zu|%ls/%s%s", i + 1, wbuf, m->category, music_name_trim_suffix(m->name));
         }
 
         get_time_str(wbuf, BUF_SIZE, total_duration);
@@ -416,7 +427,8 @@ int rmp_play(int argc, char** argv)
         if (!repeat || current_music == NULL)
             current_music = get_music(&list, run);
 
-        printt(L"\r", CLEAR_LINE L"==   =>> %s", current_music->name);
+        char* category = strlen(current_music->category) > 0 ? current_music->category : "-/";
+        printt(L"\r", CLEAR_LINE L"==   [%.*s] =>> %s", strlen(category) - 1, category, music_name_trim_suffix(current_music->name));
         fflush(stdout);
 
         if (skip == false) {

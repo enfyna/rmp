@@ -18,13 +18,19 @@ char* run_shell_command(char* dest, size_t dest_size, const char* cmd)
         return NULL;
     }
 
-    memset(dest, 0, dest_size);
-    if (fgets(dest, dest_size, f) == NULL) {
-        fwprintf(stderr, L"Failed to read output: %s\n", cmd);
+    size_t read = fread(dest, 1, dest_size, f);
+    pclose(f);
+
+    if (read == 0) {
+        fwprintf(stderr, L"Failed to read any output: %s\n", cmd);
         return NULL;
     }
 
-    pclose(f);
+    if (read == dest_size) {
+        fwprintf(stderr, L"Output length is equal or greater than the buffer size: %s\n", cmd);
+        return NULL;
+    }
+
     return dest;
 }
 
