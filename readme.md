@@ -10,7 +10,7 @@
 
 Install dependencies:
 
-        ffmpeg vlc yt-dlp
+        vlc yt-dlp taglib ncurses
 
 You can build rmp by running:
 

@@ -10,8 +10,6 @@
 
 #include "rmp.h"
 
-#define clear_line "\033[2K"
-
 #define BUF_SIZE 1024
 
 typedef char* (*fn_get_music_name)(char*, size_t, char*);
@@ -91,7 +89,7 @@ int rmp_build(int argc, char** argv)
             // extract = true;
             fwprintf(stderr, L"Warning: Skipping --extract (not implemented)\n");
         } else {
-            fwprintf(stderr, L"Invalid argument: %s\n", cmd);
+            fwprintf(stderr, L"Error: Unknown argument: %s\n", cmd);
             return 1;
         }
     }
@@ -156,7 +154,7 @@ int rmp_build(int argc, char** argv)
 
     fclose(f);
 
-    wprintf(clear_line L"Complete!\n");
+    wprintf(CLEAR_LINE L"Complete!\n");
 
     if (simulate) {
         wprintf(L"%s", simbuf);

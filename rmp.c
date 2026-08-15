@@ -56,6 +56,7 @@ int main(int argc, char** argv)
             "\tSet random seed:           [-sd|--seed] <int>\n"
             "\tStart from index:          [-st|--start] <int>\n"
             "\tDont play instantly:       [-ni|--no-instant]\n"
+            "\tPrint category list:                         [-lc|--list-categories]\n"
             "\tPrint music list with selected selector:     [-li|--list]\n"
             "Selectors:\n"
             "\tBy recency:                [-n | --newest]   [-o | --oldest]\n"
@@ -64,7 +65,7 @@ int main(int argc, char** argv)
             "\tBy category:               [-c | --category] [-cr| --category-reverse]\n"
             "\tDefaults to randomized selection.\n"
             "\n"
-            "Note: If you want to exclude more than one category you should specify all of them in 1 string. e.g: -e \"fast/pop fast/rock slow\"\n"
+            "Note: If you want to exclude more than one category you should specify all of them in 1 string. e.g: -e \". fast/pop fast/rock slow\"\n"
             "See also: There are 'rmp add' and 'rmp build' subcommands available.\n");
         return 0;
     }
