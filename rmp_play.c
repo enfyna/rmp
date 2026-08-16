@@ -10,6 +10,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <taglib/tag_c.h>
 #include <time.h>
 #include <unistd.h>
@@ -17,7 +18,7 @@
 
 #include "rmp.h"
 
-#define CMD_CVLC "cvlc \"%s%s\" --no-volume-save --play-and-exit 2>/dev/null" // --gain 0.3 --volume-step 0.1 --norm-max-level 0.01
+#define CMD_CVLC "%s/%s%s"
 #define DELETED_FILE_NAME "%s.removed.%s.bak"
 
 #define MUSIC_LIST_CAP 128
@@ -458,26 +459,51 @@ int rmp_play(int argc, char** argv)
     noecho();
     curs_set(0);
 
+    __pid_t cvlc_pid = -1;
+
     while (true) {
         now = false;
         delete = false;
         pause = false;
         int reloaded = 0;
 
-        clear();
-
-        if (COLS < 35) {
-            move(0, 0);
-            printw("Screen is too small!");
-            refresh();
-            sleep(1);
-            continue;
-        }
-
         if (!repeat || current_music == NULL)
             current_music = get_music(&list, run);
 
-        {
+        if (skip == false) {
+            cvlc_pid = fork();
+            if (cvlc_pid < 0) {
+                // error forking
+                quit(0);
+            } else if (cvlc_pid == 0) {
+                // child
+                int fd = open("/dev/null", O_WRONLY);
+                dup2(fd, 1);
+                dup2(fd, 2);
+                close(fd);
+                snprintf(buf, BUF_SIZE, CMD_CVLC, list.path, current_music->category, current_music->name);
+                char* const args[] = { "/bin/cvlc", buf, "--no-volume-save", "--play-and-exit", NULL }; // --gain 0.3 --volume-step 0.1 --norm-max-level 0.01
+                return execve("/bin/cvlc", args, NULL);
+            } else if (cvlc_pid > 0) {
+                // parent
+                session_listen_count += 1;
+            }
+        } else {
+            skip = false;
+        }
+
+        int status = -1;
+        while (0 == waitpid(cvlc_pid, &status, WNOHANG)) {
+            if (WIFEXITED(status) > 0)
+                break;
+            clear();
+            if (COLS < 35) {
+                move(0, 0);
+                printw("Screen is too small!");
+                refresh();
+                sleep(1);
+                continue;
+            }
             int nh = (LINES - 1) / 2;
             int category_len = strlen(current_music->category);
             if (category_len > 0) {
@@ -486,8 +512,17 @@ int rmp_play(int argc, char** argv)
             }
             move(nh + 2, ((COLS - 8) / 2));
             printw("%s", get_time_str(current_music->duration));
+
+            move(LINES - 1, COLS - 6);
+            printw("s: 󰒭");
+
+            move(LINES - 1, 1);
+            printw("󰩈 :q");
+
             move(nh - 2, ((COLS - 6) / 2));
-            printw("   ");
+            const char* notes[] = { "󰽶 ", "󰎇 ", " ", "󰽴 ", "󰎉 ", " ", "󰽬 ", "󰽫 ", "󰽺 ", "󰽻 ", "󰽷 ", "󰽸 ", "󰽰 ", " ", "󰽭 ", "󰽩 " };
+            printw("%s%s%s", notes[rand() % 16], notes[rand() % 16], notes[rand() % 16]);
+
             const char* trimmed_name = music_name_trim_suffix(current_music->name);
             int name_len = strlen(trimmed_name);
             if (name_len + 4 < COLS) {
@@ -497,20 +532,25 @@ int rmp_play(int argc, char** argv)
                 move(nh, 2);
                 printw("%.*s", COLS - 4, trimmed_name);
             }
-        }
-
-        refresh();
-
-        if (skip == false) {
-            snprintf(buf, BUF_SIZE, CMD_CVLC, current_music->category, current_music->name);
-            if (system(buf) == 0) {
-                session_listen_count += 1;
+            int res = 0;
+            while ((res = read(stdin->_fileno, wbuf, BUF_SIZE)) > 0) {
+                for (int j = 0; j < res; j++) {
+                    char o = wbuf[j];
+                    if (o == 's') {
+                        kill(cvlc_pid, SIGTERM);
+                        goto end;
+                    } else if (o == 'q') {
+                        kill(cvlc_pid, SIGTERM);
+                        quit(0);
+                    }
+                }
             }
-        } else {
-            skip = false;
+            refresh();
+            sleep(1);
         }
 
-        clear();
+    end:
+        NULL;
 
         int wait = (rand() % max_wait) + min_wait;
 
@@ -612,7 +652,7 @@ int rmp_play(int argc, char** argv)
                     move(h + 3, ((COLS - 30) / 2));
                     printw("p/P: Pause timer  | n: Play now");
                     move(h + 4, ((COLS - 30) / 2));
-                    printw("l: Reload musics  | q: Quit    ");
+                    printw("l: Reload musics  | q: Quit  󰩈 ");
                 }
             }
 
