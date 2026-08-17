@@ -621,11 +621,11 @@ int rmp_play(int argc, char** argv, char** envp)
                 }
             }
 
+            if (pause)
+                i--;
+
             if (now)
                 break;
-
-            wchar_t status_buf[256] = { 0 };
-            int status_w = 0;
 
             time_t current = time(NULL);
             time_t elapsed = current - start;
@@ -635,33 +635,24 @@ int rmp_play(int argc, char** argv, char** envp)
 
             int diff = elapsed % message_length;
 
-            if (delete || repeat || pause) {
-                status_w += swprintf(status_buf + status_w, 256, L"=>> ");
-                if (repeat) {
-                    status_w += swprintf(status_buf + status_w, 256, L" ");
-                }
-                if (pause) {
-                    i--;
-                    status_w += swprintf(status_buf + status_w, 256, L"󰏤 ");
-                }
-                if (delete) {
-                    const char* music_name = music_name_trim_suffix(current_music->name);
-                    int music_name_len = strlen(music_name);
-                    int ddiff = (elapsed * 1) % music_name_len;
-                    wchar_t nbuf[32] = { 0 };
-                    swprintf(nbuf, 32, L"%.*s%.*s", music_name_len - ddiff, music_name + ddiff, ddiff, music_name);
-                    status_w += swprintf(status_buf + status_w, 256, L" //   %ls // ", nbuf);
-                }
-            }
-
             clear();
 
             if (COLS < message_length) {
                 move(0, 0);
                 printw("Screen is too small!");
             } else {
-                move(0, 0);
-                printw("%ls", status_buf);
+
+                if (delete) {
+                    const char* music_name = music_name_trim_suffix(current_music->name);
+                    int music_name_len = strlen(music_name);
+                    int ddiff = (elapsed * 1) % music_name_len;
+                    wchar_t nbuf[32] = { 0 };
+                    wchar_t status_buf[256] = { 0 };
+                    swprintf(nbuf, 32, L"%.*s%.*s", music_name_len - ddiff, music_name + ddiff, ddiff, music_name);
+                    swprintf(status_buf, COLS - 10, L"//   %ls //", nbuf);
+                    move(0, (COLS - wcslen(status_buf)) / 2);
+                    printw("%ls", status_buf);
+                }
 
                 if (reloaded > 0) {
                     move(LINES - 2, 0);
@@ -675,8 +666,13 @@ int rmp_play(int argc, char** argv, char** envp)
                 move(LINES - 1, (COLS - 14));
                 printw("|   %s", get_time_str(elapsed));
 
-                move(3, (COLS / 2));
-                printw(" ");
+                if (pause || repeat) {
+                    move(3, (COLS - 1 - pause - repeat) / 2);
+                    printw("%s%s", pause ? "󰏤 " : "", repeat ? " " : "");
+                } else {
+                    move(3, (COLS - 1) / 2);
+                    printw(" ");
+                }
 
                 int center_x = (COLS - message_length) / 2;
                 move(4, center_x);
