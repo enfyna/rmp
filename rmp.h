@@ -15,7 +15,7 @@
 #define CLEAR_LINE "\033[2K"
 
 int rmp_build(int argc, char** argv);
-int rmp_play(int argc, char** argv);
+int rmp_play(int argc, char** argv, char** envp);
 int rmp_add(int argc, char** argv);
 
 bool arg(const char* cmd, const char* short_name, const char* long_name);

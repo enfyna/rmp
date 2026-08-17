@@ -285,6 +285,12 @@ int sort_title(const void* a, const void* b)
     return strcmp(m1->name, m2->name);
 }
 
+void sigchld_handler(int signum)
+{
+    (void)signum;
+    while (waitpid(-1, NULL, WNOHANG) > 0) { }
+}
+
 void quit(int a)
 {
     endwin();
@@ -292,7 +298,7 @@ void quit(int a)
     exit(a);
 }
 
-int rmp_play(int argc, char** argv)
+int rmp_play(int argc, char** argv, char** envp)
 {
     if (chdir(argv[0]) != 0) {
         fwprintf(stderr, L"Error: Couldnt change to music directory: %s\n", argv[1]);
@@ -300,6 +306,7 @@ int rmp_play(int argc, char** argv)
     }
 
     signal(SIGINT, quit);
+    signal(SIGCHLD, sigchld_handler);
 
     time_t start = time(NULL);
 
@@ -483,7 +490,7 @@ int rmp_play(int argc, char** argv)
                 close(fd);
                 snprintf(buf, BUF_SIZE, CMD_CVLC, list.path, current_music->category, current_music->name);
                 char* const args[] = { "/bin/cvlc", buf, "--no-volume-save", "--play-and-exit", NULL }; // --gain 0.3 --volume-step 0.1 --norm-max-level 0.01
-                return execve("/bin/cvlc", args, NULL);
+                return execve("/bin/cvlc", args, envp);
             } else if (cvlc_pid > 0) {
                 // parent
                 session_listen_count += 1;
@@ -492,6 +499,7 @@ int rmp_play(int argc, char** argv)
             skip = false;
         }
 
+        bool wait_music_end_to_quit = false;
         int status = -1;
         while (0 == waitpid(cvlc_pid, &status, WNOHANG)) {
             if (WIFEXITED(status) > 0)
@@ -503,6 +511,31 @@ int rmp_play(int argc, char** argv)
                 refresh();
                 sleep(1);
                 continue;
+            }
+            int res = 0;
+            while ((res = read(stdin->_fileno, wbuf, BUF_SIZE)) > 0) {
+                for (int j = 0; j < res; j++) {
+                    char o = wbuf[j];
+                    if (o == 's') {
+                        kill(cvlc_pid, SIGTERM);
+                        goto end;
+                    } else if (o == 'q') {
+                        kill(cvlc_pid, SIGTERM);
+                        quit(0);
+                    } else if (o == 'w') {
+                        wait_music_end_to_quit = true;
+                    } else if (o == 'W') {
+                        wait_music_end_to_quit = false;
+                    } else if (o == 'r') {
+                        repeat = true;
+                    } else if (o == 'R') {
+                        repeat = false;
+                    } else if (o == 'd') {
+                        delete = true;
+                    } else if (o == 'D') {
+                        delete = false;
+                    }
+                }
             }
             int nh = (LINES - 1) / 2;
             int category_len = strlen(current_music->category);
@@ -519,9 +552,23 @@ int rmp_play(int argc, char** argv)
             move(LINES - 1, 1);
             printw("󰩈 :q");
 
+            move(LINES - 2, 1);
+            printw("%s:w/W", wait_music_end_to_quit ? "󱫦 " : "󱫧 ");
+
+            move(LINES - 2, COLS - 8);
+            printw("d/D: %s", delete ? "󰗨 " : " ");
+
+            move(LINES - 3, COLS - 8);
+            printw("r/R: %s", repeat ? " " : " ");
+
             move(nh - 2, ((COLS - 6) / 2));
-            const char* notes[] = { "󰽶 ", "󰎇 ", " ", "󰽴 ", "󰎉 ", " ", "󰽬 ", "󰽫 ", "󰽺 ", "󰽻 ", "󰽷 ", "󰽸 ", "󰽰 ", " ", "󰽭 ", "󰽩 " };
-            printw("%s%s%s", notes[rand() % 16], notes[rand() % 16], notes[rand() % 16]);
+            if (delete) {
+                const char* xs[] = { " ", "󰩹 ", "󰗨 ", " ", "󱟃 ", "󱟁 ", "󰐓 ", " ", " ", "󰖭 ", "󱎘 ", "󰛉 ", "󰅚 ", "󰅝 ", "󰅗 ", "󰅙 " };
+                printw("%s%s%s", xs[rand() % 16], xs[rand() % 16], xs[rand() % 16]);
+            } else {
+                const char* notes[] = { "󰽶 ", "󰎇 ", " ", "󰽴 ", "󰎉 ", " ", "󰽬 ", "󰽫 ", "󰽺 ", "󰽻 ", "󰽷 ", "󰽸 ", "󰽰 ", " ", "󰽭 ", "󰽩 " };
+                printw("%s%s%s", notes[rand() % 16], notes[rand() % 16], notes[rand() % 16]);
+            }
 
             const char* trimmed_name = music_name_trim_suffix(current_music->name);
             int name_len = strlen(trimmed_name);
@@ -532,19 +579,6 @@ int rmp_play(int argc, char** argv)
                 move(nh, 2);
                 printw("%.*s", COLS - 4, trimmed_name);
             }
-            int res = 0;
-            while ((res = read(stdin->_fileno, wbuf, BUF_SIZE)) > 0) {
-                for (int j = 0; j < res; j++) {
-                    char o = wbuf[j];
-                    if (o == 's') {
-                        kill(cvlc_pid, SIGTERM);
-                        goto end;
-                    } else if (o == 'q') {
-                        kill(cvlc_pid, SIGTERM);
-                        quit(0);
-                    }
-                }
-            }
             refresh();
             sleep(1);
         }
@@ -552,9 +586,12 @@ int rmp_play(int argc, char** argv)
     end:
         NULL;
 
+        if (wait_music_end_to_quit)
+            quit(0);
+
         int wait = (rand() % max_wait) + min_wait;
 
-        for (int i = 0; i < wait + 3; i++) {
+        for (int i = 0; i < wait; i++) {
             int res = 0;
             while ((res = read(stdin->_fileno, wbuf, BUF_SIZE)) > 0) {
                 for (int j = 0; j < res; j++) {

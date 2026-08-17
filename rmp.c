@@ -34,7 +34,7 @@ char* run_shell_command(char* dest, size_t dest_size, const char* cmd)
     return dest;
 }
 
-int main(int argc, char** argv)
+int main(int argc, char** argv, char** envp)
 {
     setlocale(LC_ALL, "");
 
@@ -78,5 +78,5 @@ int main(int argc, char** argv)
         return rmp_build(argc - 2, argv + 2);
     }
 
-    return rmp_play(argc - 1, argv + 1);
+    return rmp_play(argc - 1, argv + 1, envp);
 }
