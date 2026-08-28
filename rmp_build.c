@@ -8,15 +8,14 @@
 #include <unistd.h>
 #include <wchar.h>
 
+#include "music.h"
 #include "rmp.h"
-
-#define BUF_SIZE 1024
 
 typedef char* (*fn_get_music_name)(char*, size_t, char*);
 
 char* get_music_name_mock(char* dest, size_t dest_size, char* music_hash)
 {
-    snprintf(dest, dest_size, "%s\n", music_hash);
+    snprintf(dest, dest_size, "%s", music_hash);
     return dest;
 }
 
@@ -29,8 +28,6 @@ char* get_music_name(char* dest, size_t dest_size, char* music_hash)
 
 int rmp_build(int argc, char** argv)
 {
-    // TODO: Extract isnt implemented!
-    // Extract will be used to create the .rmp file from the given directory.
     if (argc <= 0) {
         wprintf(
             L"                      ____        _ _     _              \n"
@@ -38,16 +35,20 @@ int rmp_build(int argc, char** argv)
             "| '__| '_ ` _ \\| '_ \\|  _ \\| | | | | |/ _` |           \n"
             "| |  | | | | | | |_) | |_) | |_| | | | (_| |              \n"
             "|_|  |_| |_| |_| .__/|____/ \\__,_|_|_|\\__,_|            \n"
-            "               |_|            random music player™ Builder (WIP)\n"
+            "               |_|            random music player™ Builder\n"
             "                                                          \n"
             "Usage:\n"
-            "\trmp build <path> [build_flags]...\n"
+            "\trmp build <mode> [build_flags]...\n"
             "\n"
+            "Mode:\n"
+            "\tExtract:                 [e|extract] \n"
+            "\tDownload:                [d|download]\n"
+            "\tSimulate:                [s|simulate]\n"
             "Build Flags:\n"
-            "\tUse build file:          [-f|--file] <string> (default: '.rmp')\n"
-            "\tUse mock functions:      [-m|--mock]             \n"
-            "\tSimulate:                [-s|--simulate]         \n"
-            "\tExtract:(not implemented)[-e|--extract]          \n");
+            "\tUse build file:          [-f|--file] <string> (default: '.rmp')\n");
+        // "\tSimulate:\n"
+        // "\t└Use mock functions:     [-m|--mock] \n"
+        // "\tNote: --mock is used to test simulating without calling yt-dlp.\n");
         return 0;
     }
 
@@ -55,54 +56,94 @@ int rmp_build(int argc, char** argv)
 
     srand(start);
 
-    char* path = argv[0];
+    char cwd[BUF_SIZE] = { 0 };
 
-    int res = chdir(path);
-    if (res != 0) {
-        fwprintf(stderr, L"Couldnt change to music directory!\n");
-        return 1;
-    }
-
-    char buf[BUF_SIZE] = { 0 };
-
-    if (strcmp(getcwd(buf, BUF_SIZE), path) == 0) {
+    if (strcmp(getcwd(cwd, BUF_SIZE), cwd) != 0) {
         fwprintf(stderr, L"The music directory couldnt be determined!\n");
-        fwprintf(stderr, L"'%s' != '%s'\n", buf, path);
         return 2;
     }
 
     bool mock = false;
-    // bool extract = false;
+    bool extract = false;
+    bool download = false;
     bool simulate = false;
     char build_file_name[NAME_MAX + 1] = { 0 };
 
-    for (int i = 1; i < argc; i++) {
+    for (int i = 0; i < argc; i++) {
         char* cmd = argv[i];
 
         if (arg(cmd, "-f", "--file")) {
             strcpy(build_file_name, argv[++i]);
-        } else if (arg(cmd, "-s", "--simulate")) {
+        } else if (arg(cmd, "e", "extract")) {
+            extract = true;
+        } else if (arg(cmd, "d", "download")) {
+            download = true;
+        } else if (arg(cmd, "s", "simulate")) {
             simulate = true;
         } else if (arg(cmd, "-m", "--mock")) {
             mock = true;
-        } else if (arg(cmd, "-e", "--extract")) {
-            // extract = true;
-            fwprintf(stderr, L"Warning: Skipping --extract (not implemented)\n");
         } else {
             fwprintf(stderr, L"Error: Unknown argument: %s\n", cmd);
             return 1;
         }
     }
 
+    if (download + simulate + extract != 1) {
+        fwprintf(stderr, L"Only one of 'simulate', 'download' or 'extract' has to be passed!\n");
+        return 1;
+    }
+
     if (strlen(build_file_name) == 0) {
         strcpy(build_file_name, ".rmp");
     }
 
+    char buf[BUF_SIZE] = { 0 };
     char buf2[BUF_SIZE] = { 0 };
     char buf3[BUF_SIZE] = { 0 };
 
-    char simbuf[BUF_SIZE] = { 0 };
-    int written = 0;
+    fn_get_music_name get_name = mock ? get_music_name_mock : get_music_name;
+
+    music_list list = { 0 };
+    list.path = cwd;
+    list.sorter = sort_category;
+    list.exclude = NULL;
+
+    DIR* dir = opendir(list.path);
+    list.count = 0;
+    load_music_from(dir, &list, NULL);
+    closedir(dir);
+
+    if (extract) {
+        FILE* f = fopen(build_file_name, "w");
+        if (f == NULL) {
+            fwprintf(stderr, L"Couldnt open build file: %s\n", build_file_name);
+            return 1;
+        }
+
+        int line = 0;
+        for (size_t i = 0; i < list.count; i++) {
+            music m = list.musics[i];
+            const char* name = music_name_trim_suffix(m.name);
+            const char* hash = music_name_get_hash(m.name);
+            if (hash == NULL) {
+                wprint_line("\n", L"No hash for: %s", name);
+                continue;
+            }
+            int category_len = strlen(m.category);
+            if (category_len == 0) {
+                fprintf(f, ".: %s | %s\n", hash, name);
+            } else {
+                fprintf(f, "%.*s: %s | %s\n", category_len - 1, m.category, hash, name);
+            }
+            line++;
+        }
+
+        fclose(f);
+
+        wprintf(L"Successfully extracted %d musics to '%s'!\n", line, build_file_name);
+
+        return 0;
+    }
 
     FILE* f = fopen(build_file_name, "r");
     if (f == NULL) {
@@ -110,55 +151,85 @@ int rmp_build(int argc, char** argv)
         return 1;
     }
 
-    fn_get_music_name get_name = mock ? get_music_name_mock : get_music_name;
-
-    if (simulate) {
-        wprintf(L"Simulating...\n");
+    if (download && list.count > 0) {
+        wprintf(L"Requested downloading but folder isnt empty. Continue?\n"
+                "(Expected an empty folder)\n");
+        scanf("0");
     }
 
+    if (simulate) {
+        wprintf(L"Simulating. No musics will be downloaded.\n");
+    }
+
+    char* simbuf = calloc(BUF_SIZE, sizeof(char));
+    size_t simbuf_count = BUF_SIZE;
+    int written = 0;
+
+    size_t download_count = 0;
     size_t line_count = 0;
     while (NULL != (fgets(buf, BUF_SIZE, f))) {
-        wprintf(L"line: %zu\r", ++line_count);
+        wprintf(L"Line: %zu\r", ++line_count);
         fflush(stdout);
-
-        char* dir = strtok(buf, ":");
-        char* hash = strtok(NULL, " |\n\0");
-
-        if (dir == NULL) {
-            fwprintf(stderr, L"Couldnt find entry dir!");
+        char* cat = strtok(buf, ":");
+        if (cat == NULL) {
+            fwprintf(stderr, L"line %zu: Couldnt find entry category!\n", line_count);
             continue;
         }
 
+        char* hash = strtok(NULL, "|");
         if (hash == NULL) {
-            fwprintf(stderr, L"Couldnt find entry hash!");
+            fwprintf(stderr, L"line %zu: Couldnt find entry hash!\n", line_count);
             continue;
         }
+        hash += 1; // trim spaces
+        hash[11] = 0;
 
-        if (!simulate) {
-            sprintf(buf2, CMD_MKDIR, dir);
-            if (system(buf2) != 0) {
-                fwprintf(stderr, L"Error while creating folder: %s\n", dir);
-                break;
-            }
-        }
-
-        char* name = get_name(buf2, BUF_SIZE, hash);
+        char* entry_name = strtok(NULL, "\n\0") + 1; // skip first space
 
         if (simulate) {
-            written += snprintf(simbuf + written, BUF_SIZE - written, "%s: %s", dir, name);
-        } else {
-            sprintf(buf3, CMD_DL_MUSIC, dir, hash, hash);
-            system(buf3);
+            if (simbuf_count - written < 100) {
+                simbuf_count *= 2;
+                simbuf = realloc(simbuf, simbuf_count);
+            }
+            char* name = (!mock || entry_name == NULL || strlen(entry_name) == 0)
+                ? get_name(buf2, BUF_SIZE, hash)
+                : entry_name;
+            if (name == NULL) {
+                written += snprintf(simbuf + written, simbuf_count - written, "Line[%zu] => Not Found: %s (%s)\n", line_count, hash, entry_name);
+            } else {
+                written += snprintf(simbuf + written, simbuf_count - written, "%s: %s | %s\n", cat, hash, name);
+            }
+        } else if (download) {
+            sprintf(buf2, CMD_MKDIR, cat);
+            if (system(buf2) != 0) {
+                fwprintf(stderr, L"Error while creating folder: '%s'\n", cat);
+                break;
+            }
+            if (entry_name == NULL || strlen(entry_name) == 0) {
+                sprintf(buf3, CMD_DL_MUSIC, cat, hash, hash);
+            } else {
+                sprintf(buf3, CMD_DL_MUSIC_NAME, cat, entry_name, hash, hash);
+            }
+            if (system(buf3) == 0) {
+                download_count++;
+            }
         }
-    };
-
-    fclose(f);
-
-    wprintf(CLEAR_LINE L"Complete!\n");
+    }
 
     if (simulate) {
-        wprintf(L"%s", simbuf);
+        wprintf(L"\n\n%s", simbuf);
     }
+
+    if (download) {
+        wprintf(
+            L"\nCompleted! Successfully downloaded %zu musics!\n"
+            "You can delete '%s' now.\n"
+            "Use 'rmp build -e' to regenerate it later.\n",
+            download_count, build_file_name);
+    }
+
+    free(simbuf);
+    fclose(f);
 
     return 0;
 }

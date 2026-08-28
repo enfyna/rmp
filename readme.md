@@ -22,28 +22,32 @@ You can build rmp by running:
 
 After building rmp you can run it like this:
 
-        ./rmp ~/Music -min 67 -max 300 --shortest --exclude fast
+        rmp play -min 67 -max 300 --shortest --exclude fast
 
-rmp will search for all music files except the fast category in the Music
+rmp will search for all music files except the fast category in the current
 folder then play the shortest ones first with a random delay of between 67 and
 300 seconds. 
 
 ## Adding New Musics
 
-        ./rmp add ~/Music fast dQw4w9WgXcQ
-        ./rmp add ~/Music slow 4TYv2PhG89A
+        rmp add fast dQw4w9WgXcQ
+        rmp add slow 4TYv2PhG89A
 
-rmp will take the youtube hash and download it to the Music folder. It will
-also create a '.rmp' file inside the folder with the following content:
+## Restoring Musics
 
-        fast: dQw4w9WgXcQ | Rick Astley - Never Gonna Give You Up (Official Video) (4K Remaster)
+If you downloaded your musics using `rmp add` you can use:
+
+        rmp build extract
+
+This will extract the youtube hashes from the file names to the `.rmp` file
+like this:
+
+        fast: dQw4w9WgXcQ | Rick Astley - Never Gonna Give You Up
         slow: 4TYv2PhG89A | Sade - Smooth Operator - Official - 1984
 
 This file then can be used to restore the musics later with their categories.
 
-## Restoring Musics
+        rmp build download
 
-        ./rmp build ~/Music
-
-rmp will search for the '.rmp' file in the Music folder. If it finds the file
+rmp will search for the '.rmp' file in the current folder. If it finds the file
 it will try downloading all listed musics.

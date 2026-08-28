@@ -1,289 +1,21 @@
+#include <alloca.h>
 #include <assert.h>
-#include <ctype.h>
 #include <dirent.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <ncurses.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/ioctl.h>
-#include <sys/stat.h>
 #include <sys/wait.h>
-#include <taglib/tag_c.h>
 #include <time.h>
 #include <unistd.h>
 #include <wchar.h>
 
+#include "music.h"
 #include "rmp.h"
 
-#define CMD_CVLC "%s/%s%s"
-#define DELETED_FILE_NAME "%s.removed.%s.bak"
-
-#define MUSIC_LIST_CAP 128
-
-#define CURSOR_UP "\x1b[A"
-#define CLEAR_SCREEN "\033[2J\033[H"
-
-static wchar_t print_buffer[1024] = { 0 };
-#define printt(end, fmt, ...)                                   \
-    do {                                                        \
-        struct winsize win;                                     \
-        ioctl(STDOUT_FILENO, TIOCGWINSZ, &win);                 \
-        swprintf(print_buffer, win.ws_col, fmt, ##__VA_ARGS__); \
-        wprintf(L"%ls" end, print_buffer);                      \
-    } while (0)
-
 static int seed = 0;
-
-typedef int (*sorter)(const void*, const void*);
-
-typedef struct {
-    int duration;
-    __time_t file_last_modified;
-    char name[NAME_MAX + 1];
-    char category[NAME_MAX + 1];
-} music;
-
-typedef struct {
-    music musics[MUSIC_LIST_CAP];
-    sorter sorter;
-    size_t count;
-    char* path;
-    char* exclude;
-} music_list;
-
-typedef music* (*selector)(music_list*, size_t);
-
-int get_music_duration(const char* filepath)
-{
-    TagLib_File* file = taglib_file_new(filepath);
-    if (!file || !taglib_file_is_valid(file)) {
-        if (file)
-            taglib_file_free(file);
-        return 0;
-    }
-    const TagLib_AudioProperties* props = taglib_file_audioproperties(file);
-    int length = taglib_audioproperties_length(props);
-    taglib_file_free(file);
-    return length;
-}
-
-char* get_time_str(long elapsed_seconds)
-{
-    static char buf[16] = { 0 };
-
-    if (elapsed_seconds < 0)
-        elapsed_seconds = 0;
-
-    int hours = elapsed_seconds / 3600;
-    int minutes = (elapsed_seconds % 3600) / 60;
-    int seconds = elapsed_seconds % 60;
-
-    snprintf(buf, 16, "%02d:%02d:%02d", hours, minutes, seconds);
-
-    return buf;
-}
-
-const char* music_name_trim_suffix(const char* music_name)
-{
-    static char buf[NAME_MAX + 1];
-
-    // music_name.hashxxxxxxx.mp3
-
-    int len = strlen(music_name);
-    if (len < 3)
-        return music_name;
-
-    if (len < 16) {
-        snprintf(buf, NAME_MAX + 1, "%.*s", len - 4, music_name);
-        return buf;
-    }
-
-    if (music_name[len - 16] == '.') {
-        snprintf(buf, NAME_MAX + 1, "%.*s", len - 16, music_name);
-        return buf;
-    }
-
-    if (music_name[len - 4] == '.') {
-        snprintf(buf, NAME_MAX + 1, "%.*s", len - 4, music_name);
-        return buf;
-    }
-
-    return music_name;
-}
-
-void load_music_from(DIR* dir, music_list* list, char* category)
-{
-    if (dir == NULL) {
-        fwprintf(stderr, L"The music directory couldnt be opened!\n");
-        return;
-    }
-
-    char buf[BUF_SIZE * 2] = { 0 };
-    char buf2[BUF_SIZE] = { 0 };
-    char buf3[BUF_SIZE] = { 0 };
-
-    bool is_this_global_and_excluded = false;
-
-    if (category == NULL && list->exclude != NULL) {
-        snprintf(buf2, BUF_SIZE, "%s", list->exclude);
-        for (char* tok = strtok(buf2, " "); !is_this_global_and_excluded && tok != NULL; tok = strtok(NULL, " ")) {
-            is_this_global_and_excluded = strcmp(tok, ".") == 0 || strcmp(tok, "g") == 0 || strcmp(tok, "global") == 0;
-        }
-    }
-
-    struct dirent* ent;
-    while ((ent = readdir(dir)) != NULL) {
-        if (ent->d_name[0] == '.')
-            continue;
-
-        if (list->count == MUSIC_LIST_CAP) {
-            break;
-        }
-
-        if (ent->d_type == DT_DIR) {
-            bool isExcluded = false;
-
-            if (category == NULL)
-                sprintf(buf3, "%s", ent->d_name);
-            else
-                sprintf(buf3, "%s/%s", category, ent->d_name);
-
-            if (list->exclude != NULL) {
-                sprintf(buf2, "%s", list->exclude);
-                for (char* tok = strtok(buf2, " "); !isExcluded && tok != NULL; tok = strtok(NULL, " ")) {
-                    isExcluded = strcmp(tok, buf3) == 0 || strcmp(tok, ent->d_name) == 0;
-                }
-            }
-            if (isExcluded)
-                continue;
-
-            snprintf(buf, BUF_SIZE * 2, "%s/%s", list->path, buf3);
-
-            DIR* sub = opendir(buf);
-            load_music_from(sub, list, buf3);
-            if (sub == NULL) {
-                wprintf(L"Couldnt open path: %ls\n", buf);
-                wprintf(L"Errno[%d]: %ls\n", errno, strerror(errno));
-            } else {
-                closedir(sub);
-            }
-        } else if (ent->d_type == DT_REG) {
-            if (is_this_global_and_excluded)
-                continue;
-
-            char file_name[NAME_MAX];
-            strcpy(file_name, ent->d_name);
-            size_t file_name_len = strlen(file_name);
-            if (file_name_len < 3)
-                continue;
-
-            char* ext = &file_name[file_name_len - 3];
-            for (size_t i = 0; i < 3; i++) {
-                ext[i] = tolower(ext[i]);
-            }
-
-            if (strcmp(ext, "mp3") != 0)
-                continue;
-
-            music* m = &list->musics[list->count];
-
-            strcpy(m->name, ent->d_name);
-            if (category != NULL) {
-                sprintf(m->category, "%s/", category);
-                sprintf(buf, "./%s/%s", category, ent->d_name);
-            } else {
-                strcpy(m->category, "");
-                sprintf(buf, "./%s", ent->d_name);
-            }
-
-            int duration = get_music_duration(buf);
-            if (duration < 0)
-                continue;
-
-            struct stat s = { 0 };
-            if (0 != stat(buf, &s)) {
-                fwprintf(stderr, L"stat(): %ls\n", strerror(errno));
-                continue;
-            };
-
-            m->file_last_modified = s.st_mtime;
-            m->duration = duration;
-
-            list->count += 1;
-
-            printt(L"\r", CLEAR_LINE L"Loaded %zu musics. [%s]\r", list->count, buf);
-            fflush(stdout);
-        }
-    }
-
-    if (category == NULL) {
-        qsort(list, list->count, sizeof(music), list->sorter);
-    }
-}
-
-music* selector_random(music_list* list, size_t seed)
-{
-    (void)seed;
-    static size_t used[MUSIC_LIST_CAP] = { 0 };
-
-    int start = rand() % list->count;
-
-    for (size_t i = 0; i < list->count; i++) {
-        int check = (start + i) % list->count;
-        if (used[check] == 0) {
-            used[check] = 1;
-            return &list->musics[check];
-        }
-    }
-
-    memset(used, 0, sizeof(size_t) * MUSIC_LIST_CAP);
-    used[start] = 1;
-
-    return &list->musics[start];
-}
-
-music* selector_linear(music_list* list, size_t seed)
-{
-    return &list->musics[seed % list->count];
-}
-
-music* selector_linear_reverse(music_list* list, size_t seed)
-{
-    seed %= list->count;
-    return &list->musics[list->count - seed - 1];
-}
-
-int sort_last_modified_time(const void* a, const void* b)
-{
-    const music *m1 = a, *m2 = b;
-    return m2->file_last_modified - m1->file_last_modified;
-}
-
-int sort_duration(const void* a, const void* b)
-{
-    const music *m1 = a, *m2 = b;
-    return m2->duration - m1->duration;
-}
-
-int sort_category(const void* a, const void* b)
-{
-    const music *m1 = a, *m2 = b;
-
-    int diff = strcmp(m1->category, m2->category);
-    if (diff != 0)
-        return diff;
-
-    return strcmp(m1->name, m2->name);
-}
-
-int sort_title(const void* a, const void* b)
-{
-    const music *m1 = a, *m2 = b;
-    return strcmp(m1->name, m2->name);
-}
 
 void sigchld_handler(int signum)
 {
@@ -300,10 +32,11 @@ void quit(int a)
 
 int rmp_play(int argc, char** argv, char** envp)
 {
-    if (chdir(argv[0]) != 0) {
-        fwprintf(stderr, L"Error: Couldnt change to music directory: %s\n", argv[1]);
-        return 1;
-    }
+    // TODO: Use vlc as a library directly
+    // #include <vlc/vlc.h>
+    // const char* name = libvlc_get_version();
+    // wprintf(L"%s\n", name);
+    // exit(0);
 
     signal(SIGINT, quit);
     signal(SIGCHLD, sigchld_handler);
@@ -324,7 +57,7 @@ int rmp_play(int argc, char** argv, char** envp)
     seed = start % 1000;
     int run = 0;
 
-    for (int i = 1; i < argc; i++) {
+    for (int i = 0; i < argc; i++) {
         char* cmd = argv[i];
 
         if (arg(cmd, "-li", "--list")) {
@@ -385,7 +118,7 @@ int rmp_play(int argc, char** argv, char** envp)
     wchar_t wbuf[BUF_SIZE] = { 0 };
     char buf[BUF_SIZE] = { 0 };
 
-    if (strcmp(getcwd(list.path, BUF_SIZE), list.path)) {
+    if (strcmp(getcwd(list.path, BUF_SIZE), list.path) != 0) {
         fwprintf(stderr, L"Error: The music directory couldnt be determined!\n");
         fwprintf(stderr, L"Reason: list.path is '%s' but ", list.path);
         fwprintf(stderr, L"getcwd(list.path, BUF_SIZE) is '%s'.\n", getcwd(list.path, BUF_SIZE));
@@ -409,8 +142,8 @@ int rmp_play(int argc, char** argv, char** envp)
         if (list.sorter != sort_category) {
             qsort(&list, list.count, sizeof(music), sort_category);
         }
-        printt(L"\n", CLEAR_LINE L"Listing Categories: %s", list.path);
-        printt(L"\n", L"--> .");
+        wprint_line("\n", CLEAR_LINE L"Listing Categories: %s", list.path);
+        wprint_line("\n", L"--> .");
         char prev_category[NAME_MAX + 1] = { 0 };
         for (size_t i = 0; i < list.count; i++) {
             music* m = selector_linear(&list, run + i);
@@ -419,7 +152,7 @@ int rmp_play(int argc, char** argv, char** envp)
             } else {
                 strcpy(prev_category, m->category);
             }
-            printt(L"\n", L"--> %.*s", strlen(m->category) - 1, m->category);
+            wprint_line("\n", L"--> %.*s", strlen(m->category) - 1, m->category);
         }
         if (list.count == MUSIC_LIST_CAP)
             fwprintf(stderr, L"!! Music list capacity is full !!\nIncrease 'MUSIC_LIST_CAP' to be able to add new musics.\n");
@@ -429,16 +162,16 @@ int rmp_play(int argc, char** argv, char** envp)
     if (list_musics) {
         int total_duration = 0;
 
-        printt(L"\n", CLEAR_LINE L"Listing Musics: %s", list.path);
+        wprint_line("\n", CLEAR_LINE L"Listing Musics: %s", list.path);
         for (size_t i = 0; i < list.count; i++) {
             music* m = get_music(&list, run + i);
             total_duration += m->duration;
-            printt(L"\n", L"-|%3zu|%s/%s%s", i + 1, get_time_str(m->duration), m->category, music_name_trim_suffix(m->name));
+            wprint_line("\n", L"-|%3zu|%s/%s%s", i + 1, get_time_str(m->duration), m->category, music_name_trim_suffix(m->name));
         }
 
-        printt(L"\n", L"Found %zu musics with %s of duration.", list.count, get_time_str(total_duration));
+        wprint_line("\n", L"Found %zu musics with %s of duration.", list.count, get_time_str(total_duration));
         if (list.exclude != NULL)
-            printt(L"\n", L"Excluded categories: %s", list.exclude);
+            wprint_line("\n", L"Excluded categories: %s", list.exclude);
         if (get_music == selector_random)
             fwprintf(stderr, L"Listed using random selector with seed = %d\n", seed);
         if (list.count == MUSIC_LIST_CAP)
@@ -488,8 +221,17 @@ int rmp_play(int argc, char** argv, char** envp)
                 dup2(fd, 1);
                 dup2(fd, 2);
                 close(fd);
-                snprintf(buf, BUF_SIZE, CMD_CVLC, list.path, current_music->category, current_music->name);
-                char* const args[] = { "/bin/cvlc", buf, "--no-volume-save", "--play-and-exit", NULL }; // --gain 0.3 --volume-step 0.1 --norm-max-level 0.01
+                snprintf(buf, BUF_SIZE, "%s/%s%s", list.path, current_music->category, current_music->name);
+                char* const args[] = {
+                    "/bin/cvlc",
+                    buf,
+                    "--audio-filter=compressor",
+                    // "--audio-filter=volnorm",
+                    // "--norm-max-level=1.0",
+                    "--no-volume-save",
+                    "--play-and-exit",
+                    NULL,
+                }; // --gain 0.3 --volume-step 0.1
                 return execve("/bin/cvlc", args, envp);
             } else if (cvlc_pid > 0) {
                 // parent
@@ -500,6 +242,7 @@ int rmp_play(int argc, char** argv, char** envp)
         }
 
         bool wait_music_end_to_quit = false;
+        bool music_has_hash = music_name_get_hash(current_music->name) != NULL;
         int status = -1;
         while (0 == waitpid(cvlc_pid, &status, WNOHANG)) {
             if (WIFEXITED(status) > 0)
@@ -534,6 +277,12 @@ int rmp_play(int argc, char** argv, char** envp)
                         delete = true;
                     } else if (o == 'D') {
                         delete = false;
+                    } else if (o == 'i') {
+                        if (music_has_hash) {
+                            char cmd[BUF_SIZE] = { 0 };
+                            snprintf(cmd, BUF_SIZE, "xdg-open " URL_YOUTUBE "%s", music_name_get_hash(current_music->name));
+                            system(cmd);
+                        }
                     }
                 }
             }
@@ -546,20 +295,23 @@ int rmp_play(int argc, char** argv, char** envp)
             move(nh + 2, ((COLS - 8) / 2));
             printw("%s", get_time_str(current_music->duration));
 
-            move(LINES - 1, COLS - 6);
-            printw("s: 󰒭");
+            move(LINES - 3, 1);
+            printw("%s:w/W", wait_music_end_to_quit ? "󱫦 " : "󱫧 ");
+
+            move(LINES - 2, 1);
+            printw(music_has_hash ? "󰖟 :i" : "󰕑 ");
 
             move(LINES - 1, 1);
             printw("󰩈 :q");
 
-            move(LINES - 2, 1);
-            printw("%s:w/W", wait_music_end_to_quit ? "󱫦 " : "󱫧 ");
+            move(LINES - 3, COLS - 8);
+            printw("r/R: %s", repeat ? " " : " ");
 
             move(LINES - 2, COLS - 8);
             printw("d/D: %s", delete ? "󰗨 " : " ");
 
-            move(LINES - 3, COLS - 8);
-            printw("r/R: %s", repeat ? " " : " ");
+            move(LINES - 1, COLS - 6);
+            printw("s: 󰒭");
 
             move(nh - 2, ((COLS - 6) / 2));
             if (delete) {
@@ -681,7 +433,7 @@ int rmp_play(int argc, char** argv, char** envp)
                 if (COLS > 60 && LINES - 6 >= 9) {
                     int h = (LINES - 6) / 2;
                     move(h + 2, ((COLS - 30) / 2));
-                    printw("r/R: Repeat       | d/D: Delete");
+                    printw("r/R: Repeat  %s   | d/D: Delete", repeat ? " " : " ");
                     move(h + 3, ((COLS - 30) / 2));
                     printw("p/P: Pause timer  | n: Play now");
                     move(h + 4, ((COLS - 30) / 2));
@@ -699,7 +451,7 @@ int rmp_play(int argc, char** argv, char** envp)
         run += 1;
 
         if (delete) {
-            snprintf(buf, BUF_SIZE, DELETED_FILE_NAME, current_music->category, current_music->name);
+            snprintf(buf, BUF_SIZE, "%s.removed.%s.bak", current_music->category, current_music->name);
             char buf2[BUF_SIZE] = { 0 };
             snprintf(buf2, BUF_SIZE, "%s%s", current_music->category, current_music->name);
             if (rename(buf2, buf)) {

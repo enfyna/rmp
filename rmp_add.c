@@ -1,8 +1,6 @@
-#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 #include <wchar.h>
 
@@ -31,7 +29,7 @@ int download_music_from_youtube(const char* category, const char* music_hash)
 
 static char failed_hashes[BUF_SIZE] = { 0 };
 static int total_added = 0;
-void rmp_download_music(FILE* f, const char* category, const char* hash)
+void rmp_download_music(const char* category, const char* hash)
 {
     char buf[BUF_SIZE] = { 0 };
     char* name = get_music_name_from_youtube(buf, BUF_SIZE, hash);
@@ -52,14 +50,12 @@ void rmp_download_music(FILE* f, const char* category, const char* hash)
     }
     wprintf(L"Download successfull: %s\n", hash);
     wprintf(L"%s: %s | %s", category, hash, name);
-    fprintf(f, "%s: %s | %s", category, hash, name);
-    fflush(f);
     total_added += 1;
 }
 
 int rmp_add(int argc, char** argv)
 {
-    if (argc < 3) {
+    if (argc < 2) {
         wprintf(
             L"                        _       _     _                \n"
             " _ __ _ __ ___  _ __   / \\   __| | __| |               \n"
@@ -68,9 +64,8 @@ int rmp_add(int argc, char** argv)
             "|_|  |_| |_| |_| .__/_/   \\_\\__,_|\\__,_|             \n"
             "               |_|            random music player™ Adder\n"
             "Usage: \n"
-            "\trmp add <path> <category> [music]... [-p <playlist>]...\n"
+            "\trmp add <category> [music]... [-p <playlist>]...\n"
             "\n"
-            "Path    : <string>\n"
             "Category: <string>\n"
             "\tSubfolder where the musics will be placed.\n"
             "\t=> rmp add <path> fast/pop [music]...\n"
@@ -85,20 +80,12 @@ int rmp_add(int argc, char** argv)
         return 0;
     }
 
-    char* path = argv[0];
-    char* category = argv[1];
-
-    int res = chdir(path);
-    if (res != 0) {
-        fwprintf(stderr, L"Couldnt change to music directory!\n");
-        return 1;
-    }
+    char* category = argv[0];
 
     char buf[BUF_SIZE] = { 0 };
 
-    if (strcmp(getcwd(buf, BUF_SIZE), path) == 0) {
+    if (strcmp(getcwd(buf, BUF_SIZE), buf) != 0) {
         fwprintf(stderr, L"The music directory couldnt be determined!\n");
-        fwprintf(stderr, L"'%s' != '%s'\n", buf, path);
         return 2;
     }
 
@@ -118,13 +105,7 @@ int rmp_add(int argc, char** argv)
         }
     }
 
-    FILE* f = fopen(".rmp", "a");
-    if (f == NULL) {
-        fwprintf(stderr, L"Error while opening: '%s'\n", ".rmp");
-        return 4;
-    }
-
-    for (int i = 2; i < argc; i++) {
+    for (int i = 1; i < argc; i++) {
         const char* cmd = argv[i];
         if (strcmp(cmd, "-p") == 0) {
             const char* playlist = argv[++i];
@@ -135,14 +116,12 @@ int rmp_add(int argc, char** argv)
             }
             wprintf(L"Found entries for '%s'", playlist);
             for (char* music = strtok(buf, "\n"); music != NULL; music = strtok(NULL, "\n")) {
-                rmp_download_music(f, category, music);
+                rmp_download_music(category, music);
             }
         } else {
-            rmp_download_music(f, category, cmd);
+            rmp_download_music(category, cmd);
         }
     }
-
-    fclose(f);
 
     wprintf(L"Successfully added %d new musics to '%s'\n", total_added, category);
 

@@ -1,9 +1,23 @@
 #include <locale.h>
+#include <sys/ioctl.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
 
 #include "rmp.h"
+
+void wprint_line(const char* end, const wchar_t* fmt, ...)
+{
+    static wchar_t print_buffer[2026] = { 0 };
+    static struct winsize win;
+    ioctl(STDOUT_FILENO, TIOCGWINSZ, &win);
+    va_list args;
+    va_start(args, fmt);
+    vswprintf(print_buffer, win.ws_col, fmt, args);
+    va_end(args);
+    wprintf(L"%ls%s", print_buffer, end);
+}
 
 bool arg(const char* cmd, const char* short_name, const char* long_name)
 {
@@ -38,7 +52,7 @@ int main(int argc, char** argv, char** envp)
 {
     setlocale(LC_ALL, "");
 
-    if (argc < 2) {
+    if (argc <= 1) {
         wprintf(
             L"  _ __ _ __ ___  _ __      \n"
             " | '__| '_ ` _ \\| '_ \\    \n"
@@ -47,7 +61,7 @@ int main(int argc, char** argv, char** envp)
             "                |_|         random music player™\n"
             "                            \n"
             "Usage:\n"
-            "\trmp <path> [selector] [play_flag]...\n"
+            "\trmp play [selector] [play_flag]...\n"
             "\n"
             "Play Flags:\n"
             "\tMin. wait between musics:  [-min|--min-wait] <uint> (default:   0 seconds)\n"
@@ -70,13 +84,18 @@ int main(int argc, char** argv, char** envp)
         return 0;
     }
 
-    if (strcmp(argv[1], "add") == 0) {
+    if (arg(argv[1], "a", "add")) {
         return rmp_add(argc - 2, argv + 2);
     }
 
-    if (strcmp(argv[1], "build") == 0) {
+    if (arg(argv[1], "b", "build")) {
         return rmp_build(argc - 2, argv + 2);
     }
 
-    return rmp_play(argc - 1, argv + 1, envp);
+    if (arg(argv[1], "p", "play")) {
+        return rmp_play(argc - 2, argv + 2, envp);
+    }
+
+    wprintf(L"Unknown subcommand use one of 'play', 'add' or 'build'.\n");
+    return 1;
 }
