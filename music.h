@@ -1,9 +1,9 @@
 #include <dirent.h>
 #include <stddef.h>
-#include <unistd.h>
 #include <time.h>
+#include <unistd.h>
 
-#define MUSIC_LIST_CAP 128
+#define MUSIC_LIST_CAP (1 << 10)
 
 typedef int (*sorter)(const void*, const void*);
 int sort_last_modified_time(const void*, const void*);
@@ -19,23 +19,23 @@ typedef struct {
 } music;
 
 typedef struct {
-    music musics[MUSIC_LIST_CAP];
     sorter sorter;
-    size_t count;
-    char* path;
     char* exclude;
+    int duration_range[2];
+    size_t count;
+    char path[NAME_MAX];
+    music musics[MUSIC_LIST_CAP];
 } music_list;
 
-typedef music* (*selector)(music_list*, size_t);
+void load_music_from(DIR*, music_list*);
 
-void load_music_from(DIR*, music_list*, char* category);
-
-char* get_time_str(long seconds);
+const char* get_time_str(long seconds);
 int get_music_duration(const char* filepath);
 
 const char* music_name_trim_suffix(const char*);
 const char* music_name_get_hash(const char*);
 
+typedef music* (*selector)(music_list*, size_t);
 music* selector_random(music_list*, size_t seed);
 music* selector_linear(music_list*, size_t seed);
 music* selector_linear_reverse(music_list*, size_t seed);

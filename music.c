@@ -29,9 +29,9 @@ int get_music_duration(const char* filepath)
     return length;
 }
 
-char* get_time_str(long elapsed_seconds)
+const char* get_time_str(long elapsed_seconds)
 {
-    static char buf[16] = { 0 };
+    static char buf[26] = { 0 };
 
     if (elapsed_seconds < 0)
         elapsed_seconds = 0;
@@ -40,7 +40,10 @@ char* get_time_str(long elapsed_seconds)
     int minutes = (elapsed_seconds % 3600) / 60;
     int seconds = elapsed_seconds % 60;
 
-    snprintf(buf, 16, "%02d:%02d:%02d", hours, minutes, seconds);
+    if (hours > 0)
+        snprintf(buf, 26, "%02d:%02d:%02d", hours, minutes, seconds);
+    else
+        snprintf(buf, 26, "%02d:%02d", minutes, seconds);
 
     return buf;
 }
@@ -60,7 +63,7 @@ const char* music_name_trim_suffix(const char* music_name)
         return buf;
     }
 
-    if (music_name[len - 16] == '.') {
+    if (music_name[len - 16] == '.' && music_name[len - 4] == '.') {
         snprintf(buf, NAME_MAX + 1, "%.*s", len - 16, music_name);
         return buf;
     }
@@ -84,7 +87,7 @@ const char* music_name_get_hash(const char* music_name)
         return NULL;
     }
 
-    if (music_name[len - 16] == '.') {
+    if (music_name[len - 16] == '.' && music_name[len - 4] == '.') {
         snprintf(buf, NAME_MAX + 1, "%.*s", 11, music_name + len - 15);
         return buf;
     }
@@ -92,25 +95,29 @@ const char* music_name_get_hash(const char* music_name)
     return NULL;
 }
 
-void load_music_from(DIR* dir, music_list* list, char* category)
+bool _string_contains_token(const char* str, const char* t1, const char* t2)
 {
-    if (dir == NULL) {
-        fwprintf(stderr, L"The music directory couldnt be opened!\n");
+    if (str == NULL || t1 == NULL || t2 == NULL)
+        return false;
+    char buf[BUF_SIZE] = { 0 };
+    snprintf(buf, BUF_SIZE, "%s", str);
+    for (char* tok = strtok(buf, " "); tok != NULL; tok = strtok(NULL, " ")) {
+        if (strcmp(tok, t1) == 0 || strcmp(tok, t2) == 0)
+            return true;
+    }
+    return false;
+}
+
+void _load_music_from(DIR* dir, music_list* list, char* category)
+{
+    if (dir == NULL || list == NULL) {
+        fwprintf(stderr, L"The music directory '%s' couldnt be opened!\n", category ? category : ".");
         return;
     }
 
-    char buf[BUF_SIZE * 2] = { 0 };
-    char buf2[BUF_SIZE] = { 0 };
-    char buf3[BUF_SIZE] = { 0 };
-
-    bool is_this_global_and_excluded = false;
-
-    if (category == NULL && list->exclude != NULL) {
-        snprintf(buf2, BUF_SIZE, "%s", list->exclude);
-        for (char* tok = strtok(buf2, " "); !is_this_global_and_excluded && tok != NULL; tok = strtok(NULL, " ")) {
-            is_this_global_and_excluded = strcmp(tok, ".") == 0 || strcmp(tok, "g") == 0 || strcmp(tok, "global") == 0;
-        }
-    }
+    bool root_directory = category == NULL;
+    bool is_this_root_and_excluded = root_directory
+        && _string_contains_token(list->exclude, ".", "-");
 
     struct dirent* ent;
     while ((ent = readdir(dir)) != NULL) {
@@ -122,34 +129,30 @@ void load_music_from(DIR* dir, music_list* list, char* category)
         }
 
         if (ent->d_type == DT_DIR) {
-            bool isExcluded = false;
+            char new_category[BUF_SIZE] = { 0 };
 
-            if (category == NULL)
-                sprintf(buf3, "%s", ent->d_name);
+            if (root_directory)
+                sprintf(new_category, "%s", ent->d_name);
             else
-                sprintf(buf3, "%s/%s", category, ent->d_name);
+                sprintf(new_category, "%s/%s", category, ent->d_name);
 
-            if (list->exclude != NULL) {
-                sprintf(buf2, "%s", list->exclude);
-                for (char* tok = strtok(buf2, " "); !isExcluded && tok != NULL; tok = strtok(NULL, " ")) {
-                    isExcluded = strcmp(tok, buf3) == 0 || strcmp(tok, ent->d_name) == 0;
-                }
-            }
+            bool isExcluded = _string_contains_token(list->exclude, new_category, ent->d_name);
             if (isExcluded)
                 continue;
 
-            snprintf(buf, BUF_SIZE * 2, "%s/%s", list->path, buf3);
+            char full_path[BUF_SIZE * 2] = { 0 };
+            snprintf(full_path, BUF_SIZE * 2, "%s/%s", list->path, new_category);
 
-            DIR* sub = opendir(buf);
-            load_music_from(sub, list, buf3);
+            DIR* sub = opendir(full_path);
+            _load_music_from(sub, list, new_category);
             if (sub == NULL) {
-                wprintf(L"Couldnt open path: %ls\n", buf);
-                wprintf(L"Errno[%d]: %ls\n", errno, strerror(errno));
+                fwprintf(stderr, L"Couldnt open path: %ls\n", full_path);
+                fwprintf(stderr, L"Errno[%d]: %ls\n", errno, strerror(errno));
             } else {
                 closedir(sub);
             }
         } else if (ent->d_type == DT_REG) {
-            if (is_this_global_and_excluded)
+            if (is_this_root_and_excluded)
                 continue;
 
             char file_name[NAME_MAX];
@@ -168,40 +171,48 @@ void load_music_from(DIR* dir, music_list* list, char* category)
 
             music* m = &list->musics[list->count];
 
-            strcpy(m->name, ent->d_name);
-            if (category != NULL) {
-                sprintf(m->category, "%s/", category);
-                sprintf(buf, "./%s/%s", category, ent->d_name);
-            } else {
+            char full_path[BUF_SIZE * 2] = { 0 };
+            if (root_directory) {
                 strcpy(m->category, "");
-                sprintf(buf, "./%s", ent->d_name);
+                sprintf(full_path, "./%s", ent->d_name);
+            } else {
+                sprintf(m->category, "%s/", category);
+                sprintf(full_path, "./%s/%s", category, ent->d_name);
             }
 
-            int duration = get_music_duration(buf);
-            if (duration < 0)
+            int duration = get_music_duration(full_path);
+            if (duration < 0
+                || (list->duration_range[0] > 0 && duration < list->duration_range[0])
+                || (list->duration_range[1] > 0 && duration > list->duration_range[1]))
                 continue;
 
             struct stat s = { 0 };
-            if (0 != stat(buf, &s)) {
+            if (0 != stat(full_path, &s)) {
                 fwprintf(stderr, L"stat(): %ls\n", strerror(errno));
                 continue;
             };
 
+            strcpy(m->name, ent->d_name);
             m->file_last_modified = s.st_mtime;
             m->duration = duration;
 
             list->count += 1;
 
-            wprint_line("\r", CLEAR_LINE L"Loaded %zu musics. [%s]\r", list->count, buf);
+            wprint_line("\r", CLEAR_LINE L"Loaded %zu musics. [%s]\r", list->count, full_path);
             fflush(stdout);
         }
     }
+}
 
-    if (category == NULL) {
-        qsort(list, list->count, sizeof(music), list->sorter);
-        wprint_line("\n", CLEAR_LINE L"Loaded %zu musics.\n", list->count, buf);
-        fflush(stdout);
-    }
+void load_music_from(DIR* dir, music_list* list)
+{
+    list->count = 0;
+
+    _load_music_from(dir, list, NULL);
+
+    qsort(list->musics, list->count, sizeof(music), list->sorter);
+    wprint_line("\n", CLEAR_LINE L"Loaded %zu musics.\n", list->count);
+    fflush(stdout);
 }
 
 music* selector_random(music_list* list, size_t seed)

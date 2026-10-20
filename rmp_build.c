@@ -103,14 +103,11 @@ int rmp_build(int argc, char** argv)
 
     fn_get_music_name get_name = mock ? get_music_name_mock : get_music_name;
 
-    music_list list = { 0 };
-    list.path = cwd;
-    list.sorter = sort_category;
-    list.exclude = NULL;
+    music_list list = { .sorter = sort_last_modified_time };
+    strcpy(list.path, cwd);
 
     DIR* dir = opendir(list.path);
-    list.count = 0;
-    load_music_from(dir, &list, NULL);
+    load_music_from(dir, &list);
     closedir(dir);
 
     if (extract) {
@@ -195,7 +192,7 @@ int rmp_build(int argc, char** argv)
                 ? get_name(buf2, BUF_SIZE, hash)
                 : entry_name;
             if (name == NULL) {
-                written += snprintf(simbuf + written, simbuf_count - written, "Line[%zu] => Not Found: %s (%s)\n", line_count, hash, entry_name);
+                written += snprintf(simbuf + written, simbuf_count - written, "%s:%zu => Not Found: %s (%s)\n", build_file_name, line_count, hash, entry_name);
             } else {
                 written += snprintf(simbuf + written, simbuf_count - written, "%s: %s | %s\n", cat, hash, name);
             }

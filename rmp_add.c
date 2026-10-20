@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <wchar.h>
 
+#include "music.h"
 #include "rmp.h"
 
 char* get_playlist_from_youtube(char* dest, size_t dest_size, const char* playlist_hash)
@@ -27,11 +28,35 @@ int download_music_from_youtube(const char* category, const char* music_hash)
     return system(buf);
 }
 
+int does_hash_exist(music_list* list, const char* hash)
+{
+    for (size_t i = 0; i < list->count; i++) {
+        const char* h = music_name_get_hash(list->musics[i].name);
+        if (h != NULL && strcmp(h, hash) == 0)
+            return i;
+    }
+    return -1;
+}
+
 static char failed_hashes[BUF_SIZE] = { 0 };
 static int total_added = 0;
-void rmp_download_music(const char* category, const char* hash)
+void rmp_download_music(music_list* list, const char* category, const char* hash)
 {
     char buf[BUF_SIZE] = { 0 };
+
+    int i = does_hash_exist(list, hash);
+    if (i >= 0) {
+        music m = list->musics[i];
+        strcat(failed_hashes, "Exists   : ");
+        strcat(failed_hashes, hash);
+        strcat(failed_hashes, " -> ");
+        strcat(failed_hashes, m.category);
+        strcat(failed_hashes, m.name);
+        strcat(failed_hashes, "\n");
+        fwprintf(stderr, L"Didnt download: %s -> %s%s\n", hash, m.category, m.name);
+        return;
+    }
+
     char* name = get_music_name_from_youtube(buf, BUF_SIZE, hash);
     if (name == NULL) {
         strcat(failed_hashes, "Not found: ");
@@ -51,6 +76,10 @@ void rmp_download_music(const char* category, const char* hash)
     wprintf(L"Download successfull: %s\n", hash);
     wprintf(L"%s: %s | %s", category, hash, name);
     total_added += 1;
+
+    DIR* dir = opendir(list->path);
+    load_music_from(dir, list);
+    closedir(dir);
 }
 
 int rmp_add(int argc, char** argv)
@@ -64,7 +93,7 @@ int rmp_add(int argc, char** argv)
             "|_|  |_| |_| |_| .__/_/   \\_\\__,_|\\__,_|             \n"
             "               |_|            random music player™ Adder\n"
             "Usage: \n"
-            "\trmp add <category> [music]... [-p <playlist>]...\n"
+            "\trmp add <category> [music]... [-p <playlist>...]\n"
             "\n"
             "Category: <string>\n"
             "\tSubfolder where the musics will be placed.\n"
@@ -89,6 +118,13 @@ int rmp_add(int argc, char** argv)
         return 2;
     }
 
+    music_list music_list = { .sorter = sort_last_modified_time };
+    getcwd(music_list.path, NAME_MAX);
+
+    DIR* dir = opendir(music_list.path);
+    load_music_from(dir, &music_list);
+    closedir(dir);
+
     fwprintf(stderr, L"path = '%s', category = '%s'\n", buf, category);
     wprintf(L"Continue?", category);
     scanf("0");
@@ -105,10 +141,16 @@ int rmp_add(int argc, char** argv)
         }
     }
 
+    bool playlist_mode = false;
+
     for (int i = 1; i < argc; i++) {
         const char* cmd = argv[i];
-        if (strcmp(cmd, "-p") == 0) {
-            const char* playlist = argv[++i];
+        if (!playlist_mode && strcmp(cmd, "-p") == 0) {
+            playlist_mode = true;
+            continue;
+        }
+        if (playlist_mode) {
+            const char* playlist = argv[i];
             char* list = get_playlist_from_youtube(buf, BUF_SIZE, playlist);
             if (list == NULL) {
                 fwprintf(stderr, L"Couldnt find playlist: %s\n", playlist);
@@ -116,10 +158,15 @@ int rmp_add(int argc, char** argv)
             }
             wprintf(L"Found entries for '%s'", playlist);
             for (char* music = strtok(buf, "\n"); music != NULL; music = strtok(NULL, "\n")) {
-                rmp_download_music(category, music);
+                rmp_download_music(&music_list, category, music);
             }
         } else {
-            rmp_download_music(category, cmd);
+            const char* hash = argv[i];
+            if (strlen(hash) != 11) {
+                fwprintf(stderr, L"Hash length is not 11: %s\n", hash);
+                continue;
+            }
+            rmp_download_music(&music_list, category, hash);
         }
     }
 

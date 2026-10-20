@@ -43,10 +43,7 @@ int rmp_play(int argc, char** argv, char** envp)
 
     time_t start = time(NULL);
 
-    music_list list = { 0 };
-    list.path = alloca(sizeof(char) * NAME_MAX);
-    list.sorter = sort_last_modified_time;
-    list.exclude = NULL;
+    music_list list = { .sorter = sort_last_modified_time };
 
     selector get_music = selector_random;
     bool list_musics = false;
@@ -64,8 +61,6 @@ int rmp_play(int argc, char** argv, char** envp)
             list_musics = true;
         } else if (arg(cmd, "-lc", "--list-categories")) {
             list_categories = true;
-        } else if (arg(cmd, "-", "--")) {
-            // do nothing
         } else if (arg(cmd, "-n", "--new")) {
             list.sorter = sort_last_modified_time;
             get_music = selector_linear;
@@ -100,6 +95,10 @@ int rmp_play(int argc, char** argv, char** envp)
             max_wait = strtoul(argv[++i], NULL, 10);
         else if (arg(cmd, "-min", "--min-wait"))
             min_wait = strtoul(argv[++i], NULL, 10);
+        else if (arg(cmd, "-mad", "--max-duration"))
+            list.duration_range[1] = strtoul(argv[++i], NULL, 10);
+        else if (arg(cmd, "-mid", "--min-duration"))
+            list.duration_range[0] = strtoul(argv[++i], NULL, 10);
         else if (arg(cmd, "-ni", "--no-instant"))
             skip = true;
         else if (arg(cmd, "-e", "--exclude"))
@@ -129,8 +128,7 @@ int rmp_play(int argc, char** argv, char** envp)
     fflush(stdout);
 
     DIR* dir = opendir(list.path);
-    list.count = 0;
-    load_music_from(dir, &list, NULL);
+    load_music_from(dir, &list);
     closedir(dir);
 
     if (list.count == 0) {
@@ -140,7 +138,7 @@ int rmp_play(int argc, char** argv, char** envp)
 
     if (list_categories) {
         if (list.sorter != sort_category) {
-            qsort(&list, list.count, sizeof(music), sort_category);
+            qsort(&list.musics, list.count, sizeof(music), sort_category);
         }
         wprint_line("\n", CLEAR_LINE L"Listing Categories: %s", list.path);
         wprint_line("\n", L"--> .");
@@ -149,9 +147,8 @@ int rmp_play(int argc, char** argv, char** envp)
             music* m = selector_linear(&list, run + i);
             if (strcmp(prev_category, m->category) == 0) {
                 continue;
-            } else {
-                strcpy(prev_category, m->category);
             }
+            strcpy(prev_category, m->category);
             wprint_line("\n", L"--> %.*s", strlen(m->category) - 1, m->category);
         }
         if (list.count == MUSIC_LIST_CAP)
@@ -166,7 +163,21 @@ int rmp_play(int argc, char** argv, char** envp)
         for (size_t i = 0; i < list.count; i++) {
             music* m = get_music(&list, run + i);
             total_duration += m->duration;
-            wprint_line("\n", L"-|%3zu|%s/%s%s", i + 1, get_time_str(m->duration), m->category, music_name_trim_suffix(m->name));
+
+            struct winsize w;
+            ioctl(0, TIOCGWINSZ, &w);
+            const char* m_name = music_name_trim_suffix(m->name);
+            int c_len = strlen(m->category);
+            int m_len = strlen(m_name);
+            wprintf(
+                L"-|" ANSI_RED "%3zu" ANSI_RESET
+                "|" ANSI_CYAN "%s" ANSI_RESET
+                "|" ANSI_YELLOW "%.*s" ANSI_RESET
+                "%s %.*s\n",
+                i + 1,
+                get_time_str(m->duration),
+                c_len - 1, m->category,
+                c_len > 0 ? "|" : "", w.ws_col - 1 > (c_len + m_len + 14) ? m_len : w.ws_col - c_len - 14, m_name);
         }
 
         wprint_line("\n", L"Found %zu musics with %s of duration.", list.count, get_time_str(total_duration));
@@ -189,6 +200,7 @@ int rmp_play(int argc, char** argv, char** envp)
     bool repeat = false;
     bool pause = false;
     bool delete = false;
+    bool once = false;
 
     unsigned int session_listen_count = 0;
 
@@ -198,6 +210,31 @@ int rmp_play(int argc, char** argv, char** envp)
     cbreak();
     noecho();
     curs_set(0);
+    if (has_colors() == FALSE) {
+        endwin();
+        printf("Your terminal does not support color\n");
+        exit(1);
+    }
+    start_color();
+#define PAIR_GREY 1
+#define COLOR_GREY (COLORS - PAIR_GREY)
+#define PAIR_LIGHTGREY 2
+#define COLOR_LIGHTGREY (COLORS - PAIR_LIGHTGREY)
+#define PAIR_E1 3
+#define PAIR_E2 4
+#define PAIR_E3 5
+#define PAIR_E4 6
+#define PAIR_E5 7
+    init_color(COLOR_WHITE, 1000, 1000, 1000);
+    init_color(COLOR_LIGHTGREY, 945, 945, 945);
+    init_color(COLOR_GREY, 540, 540, 540);
+    init_pair(PAIR_GREY, COLOR_GREY, COLOR_BLACK);
+    init_pair(PAIR_LIGHTGREY, COLOR_LIGHTGREY, COLOR_BLACK);
+    init_pair(PAIR_E1, COLOR_YELLOW, COLOR_BLACK);
+    init_pair(PAIR_E2, COLOR_GREEN, COLOR_BLACK);
+    init_pair(PAIR_E3, COLOR_CYAN, COLOR_BLACK);
+    init_pair(PAIR_E4, COLOR_YELLOW, COLOR_BLACK);
+    init_pair(PAIR_E5, COLOR_RED, COLOR_BLACK);
 
     __pid_t cvlc_pid = -1;
 
@@ -205,12 +242,14 @@ int rmp_play(int argc, char** argv, char** envp)
         now = false;
         delete = false;
         pause = false;
+
         int reloaded = 0;
 
-        if (!repeat || current_music == NULL)
+        if (current_music == NULL || (!once && !repeat))
             current_music = get_music(&list, run);
 
-        if (skip == false) {
+        if (skip == false || once) {
+            once = false;
             cvlc_pid = fork();
             if (cvlc_pid < 0) {
                 // error forking
@@ -225,6 +264,7 @@ int rmp_play(int argc, char** argv, char** envp)
                 char* const args[] = {
                     "/bin/cvlc",
                     buf,
+                    "--no-repeat",
                     "--audio-filter=compressor",
                     // "--audio-filter=volnorm",
                     // "--norm-max-level=1.0",
@@ -248,7 +288,7 @@ int rmp_play(int argc, char** argv, char** envp)
             if (WIFEXITED(status) > 0)
                 break;
             clear();
-            if (COLS < 35) {
+            if (COLS < 35 || LINES < 8) {
                 move(0, 0);
                 printw("Screen is too small!");
                 refresh();
@@ -287,13 +327,52 @@ int rmp_play(int argc, char** argv, char** envp)
                 }
             }
             int nh = (LINES - 1) / 2;
-            int category_len = strlen(current_music->category);
-            if (category_len > 0) {
-                move(LINES - 1, ((COLS - category_len - 3) / 2));
-                printw("<|%.*s|>", category_len - 1, current_music->category);
+
+            // const char* f = "█";
+            // const char* d = "▓";
+            // const char* m = "▒";
+            // const char* l = "░";
+
+            for (int i = 0; i < nh - 3; i++) {
+                move(i, ((COLS - 11) / 2));
+                for (int j = 0; j < 4; j++) {
+                    attron(COLOR_PAIR(delete ? PAIR_E5 : PAIR_E1 + j));
+                    printw("░░ ");
+                    attroff(COLOR_PAIR(delete ? PAIR_E5 : PAIR_E1 + j));
+                }
             }
-            move(nh + 2, ((COLS - 8) / 2));
-            printw("%s", get_time_str(current_music->duration));
+
+            move(nh - 2, ((COLS - 11) / 2));
+            const char* xs[] = { " ", "󰩹 ", "󰗨 ", " ", "󱟃 ", "󱟁 ", "󰐓 ", " ", " ", "󰖭 ", "󱎘 ", "󰛉 ", "󰅚 ", "󰅝 ", "󰅗 ", "󰅙 " };
+            const char* ns[] = { "󰽶 ", "󰎇 ", " ", "󰽴 ", "󰎉 ", " ", "󰽬 ", "󰽫 ", "󰽺 ", "󰽻 ", "󰽷 ", "󰽸 ", "󰽰 ", " ", "󰽭 ", "󰽩 " };
+            for (int i = 0; i < 4; i++) {
+                attron(COLOR_PAIR(delete ? PAIR_E5 : PAIR_E1 + i));
+                printw("%s ", (delete ? xs : ns)[rand() % 16]);
+                attroff(COLOR_PAIR(delete ? PAIR_E5 : PAIR_E1 + i));
+            }
+
+            const char* trimmed_name = music_name_trim_suffix(current_music->name);
+            int name_len = strlen(trimmed_name);
+            if (name_len + 4 < COLS) {
+                move(nh, (COLS - name_len) / 2);
+                printw("%s", trimmed_name);
+            } else {
+                move(nh, 2);
+                printw("%.*s", COLS - 4, trimmed_name);
+            }
+
+            attron(COLOR_PAIR(PAIR_GREY));
+            const char* time_str = get_time_str(current_music->duration);
+            move(nh + 2, ((COLS - strlen(time_str)) / 2));
+            printw("%s", time_str);
+            attroff(COLOR_PAIR(PAIR_GREY));
+
+            attron(COLOR_PAIR(PAIR_LIGHTGREY));
+            int category_len = strlen(current_music->category) - 1;
+            if (category_len > 0) {
+                move(LINES - 1, (COLS - category_len - 2) / 2);
+                printw("[%.*s]", category_len, current_music->category);
+            }
 
             move(LINES - 3, 1);
             printw("%s:w/W", wait_music_end_to_quit ? "󱫦 " : "󱫧 ");
@@ -312,25 +391,8 @@ int rmp_play(int argc, char** argv, char** envp)
 
             move(LINES - 1, COLS - 6);
             printw("s: 󰒭");
+            attroff(COLOR_PAIR(PAIR_LIGHTGREY));
 
-            move(nh - 2, ((COLS - 6) / 2));
-            if (delete) {
-                const char* xs[] = { " ", "󰩹 ", "󰗨 ", " ", "󱟃 ", "󱟁 ", "󰐓 ", " ", " ", "󰖭 ", "󱎘 ", "󰛉 ", "󰅚 ", "󰅝 ", "󰅗 ", "󰅙 " };
-                printw("%s%s%s", xs[rand() % 16], xs[rand() % 16], xs[rand() % 16]);
-            } else {
-                const char* notes[] = { "󰽶 ", "󰎇 ", " ", "󰽴 ", "󰎉 ", " ", "󰽬 ", "󰽫 ", "󰽺 ", "󰽻 ", "󰽷 ", "󰽸 ", "󰽰 ", " ", "󰽭 ", "󰽩 " };
-                printw("%s%s%s", notes[rand() % 16], notes[rand() % 16], notes[rand() % 16]);
-            }
-
-            const char* trimmed_name = music_name_trim_suffix(current_music->name);
-            int name_len = strlen(trimmed_name);
-            if (name_len + 4 < COLS) {
-                move(nh, (COLS - name_len) / 2);
-                printw("%s", trimmed_name);
-            } else {
-                move(nh, 2);
-                printw("%.*s", COLS - 4, trimmed_name);
-            }
             refresh();
             sleep(1);
         }
@@ -352,8 +414,7 @@ int rmp_play(int argc, char** argv, char** envp)
                         quit(0);
                     } else if (o == 'l') {
                         DIR* dir = opendir(list.path);
-                        list.count = 0;
-                        load_music_from(dir, &list, NULL);
+                        load_music_from(dir, &list);
                         closedir(dir);
                         reloaded = 3;
                     } else if (o == 'n')
@@ -370,13 +431,15 @@ int rmp_play(int argc, char** argv, char** envp)
                         repeat = true;
                     else if (o == 'R')
                         repeat = false;
+                    else if (o == 'o')
+                        once = true;
                 }
             }
 
             if (pause)
                 i--;
 
-            if (now)
+            if (now || once)
                 break;
 
             time_t current = time(NULL);
@@ -389,7 +452,8 @@ int rmp_play(int argc, char** argv, char** envp)
 
             clear();
 
-            if (COLS < message_length) {
+            attron(COLOR_PAIR(PAIR_LIGHTGREY));
+            if (COLS < message_length || LINES < 8) {
                 move(0, 0);
                 printw("Screen is too small!");
             } else {
@@ -415,12 +479,13 @@ int rmp_play(int argc, char** argv, char** envp)
                 move(LINES - 1, 0);
                 printw(" %zu 󱍚  | %d 󰐑  |", list.count, session_listen_count);
 
-                move(LINES - 1, (COLS - 14));
-                printw("|   %s", get_time_str(elapsed));
+                const char* elapsed_str = get_time_str(elapsed);
+                move(LINES - 1, (COLS - (6 + strlen(elapsed_str))));
+                printw("|   %s", elapsed_str);
 
-                if (pause || repeat) {
-                    move(3, (COLS - 1 - pause - repeat) / 2);
-                    printw("%s%s", pause ? "󰏤 " : "", repeat ? " " : "");
+                if (pause) {
+                    move(3, (COLS - 1) / 2);
+                    printw("󰏤 ");
                 } else {
                     move(3, (COLS - 1) / 2);
                     printw(" ");
@@ -440,6 +505,7 @@ int rmp_play(int argc, char** argv, char** envp)
                     printw("l: Reload musics  | q: Quit  󰩈 ");
                 }
             }
+            attroff(COLOR_PAIR(PAIR_LIGHTGREY));
 
             refresh();
             sleep(1);
@@ -451,7 +517,7 @@ int rmp_play(int argc, char** argv, char** envp)
         run += 1;
 
         if (delete) {
-            snprintf(buf, BUF_SIZE, "%s.removed.%s.bak", current_music->category, current_music->name);
+            snprintf(buf, BUF_SIZE, "%s.removed.%s", current_music->category, current_music->name);
             char buf2[BUF_SIZE] = { 0 };
             snprintf(buf2, BUF_SIZE, "%s%s", current_music->category, current_music->name);
             if (rename(buf2, buf)) {
@@ -460,8 +526,7 @@ int rmp_play(int argc, char** argv, char** envp)
                 exit(7);
             }
             DIR* dir = opendir(list.path);
-            list.count = 0;
-            load_music_from(dir, &list, NULL);
+            load_music_from(dir, &list);
             closedir(dir);
             run -= 1;
         }

@@ -1,5 +1,4 @@
 #include <locale.h>
-#include <sys/ioctl.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -24,7 +23,7 @@ bool arg(const char* cmd, const char* short_name, const char* long_name)
     return !strcmp(cmd, short_name) || !strcmp(cmd, long_name);
 }
 
-char* run_shell_command(char* dest, size_t dest_size, const char* cmd)
+char* run_shell_command(char* dst, size_t dst_size, const char* cmd)
 {
     FILE* f = popen(cmd, "r");
     if (f == NULL) {
@@ -32,7 +31,7 @@ char* run_shell_command(char* dest, size_t dest_size, const char* cmd)
         return NULL;
     }
 
-    size_t read = fread(dest, 1, dest_size, f);
+    size_t read = fread(dst, 1, dst_size, f);
     pclose(f);
 
     if (read == 0) {
@@ -40,12 +39,12 @@ char* run_shell_command(char* dest, size_t dest_size, const char* cmd)
         return NULL;
     }
 
-    if (read == dest_size) {
+    if (read == dst_size) {
         fwprintf(stderr, L"Output length is equal or greater than the buffer size: %s\n", cmd);
         return NULL;
     }
 
-    return dest;
+    return dst;
 }
 
 int main(int argc, char** argv, char** envp)
@@ -66,6 +65,8 @@ int main(int argc, char** argv, char** envp)
             "Play Flags:\n"
             "\tMin. wait between musics:  [-min|--min-wait] <uint> (default:   0 seconds)\n"
             "\tMax. wait between musics:  [-max|--max-wait] <uint> (default: 600 seconds)\n"
+            "\tMin. music duration:       [-mid|--min-duration] <uint>\n"
+            "\tMax. music duration:       [-mad|--max-duration] <uint>\n"
             "\tExclude category:          [-e|--exclude] <string>\n"
             "\tSet random seed:           [-sd|--seed] <int>\n"
             "\tStart from index:          [-st|--start] <int>\n"

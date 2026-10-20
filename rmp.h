@@ -1,6 +1,5 @@
 #include <fcntl.h>
 #include <limits.h>
-#include <unistd.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <sys/ioctl.h>
@@ -19,6 +18,12 @@
 #define CURSOR_UP "\x1b[A"
 #define CLEAR_SCREEN "\033[2J\033[H"
 #define CLEAR_LINE "\033[2K"
+
+#define ANSI_CYAN "\033[1;96m"
+#define ANSI_YELLOW "\033[1;93m"
+#define ANSI_RED "\033[1;92m"
+#define ANSI_GREY "\033[38;5;245m"
+#define ANSI_RESET "\033[0m"
 
 int rmp_build(int argc, char** argv);
 int rmp_play(int argc, char** argv, char** envp);
