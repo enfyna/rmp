@@ -38,6 +38,13 @@
 static const char* xs[] = { " ", "󰩹 ", "󰗨 ", " ", "󱟃 ", "󱟁 ", "󰐓 ", " ", " ", "󰖭 ", "󱎘 ", "󰛉 ", "󰅚 ", "󰅝 ", "󰅗 ", "󰅙 " };
 static const char* ns[] = { "󰽶 ", "󰎇 ", " ", "󰽴 ", "󰎉 ", " ", "󰽬 ", "󰽫 ", "󰽺 ", "󰽻 ", "󰽷 ", "󰽸 ", "󰽰 ", " ", "󰽭 ", "󰽩 " };
 
+#define BOX_1 "█"
+#define BOX_2 "▓"
+#define BOX_3 "▒"
+#define BOX_4 "░"
+
+#define SCREEN_SIZE_LIMIT (COLS < 45 || LINES < 8)
+
 static int seed = 0;
 
 void sigchld_handler(int signum)
@@ -55,20 +62,15 @@ void quit(int a)
 
 void draw_vertical_line(int y)
 {
+    move(y, 0);
     for (int i = 0; i < COLS; i++) {
-        move(y, i);
-        printw("░");
+        printw(BOX_4);
     }
 }
 
 void draw_music_screen(music* current_music, bool music_has_hash, bool delete, bool repeat, bool wait_music_end_to_quit)
 {
     int nh = (LINES - 1) / 2;
-
-    // const char* f = "█";
-    // const char* d = "▓";
-    // const char* m = "▒";
-    // const char* l = "░";
 
 #define BAR_PAIR delete      ? PAIR_E5 \
     : wait_music_end_to_quit ? PAIR_E7 \
@@ -79,7 +81,7 @@ void draw_music_screen(music* current_music, bool music_has_hash, bool delete, b
         move(i, ((COLS - 11) / 2));
         for (int j = 0; j < 4; j++) {
             TEXT_COLOR(BAR_PAIR + j, {
-                printw("░░ ");
+                printw(BOX_4 BOX_4 " ");
             });
         }
     }
@@ -113,52 +115,58 @@ void draw_music_screen(music* current_music, bool music_has_hash, bool delete, b
         if (c == '-'
             && i < name_len - 2 && trimmed_name[i + 1] == ' '
             && trimmed_name[i - 1] == ' '
-            && (i < paren_start || !found_paren_start)) {
+            && (((found_paren_start && i < paren_start)
+                || (!found_paren_start && paren_start >= 0)))) {
             dash_position = i;
+            break;
         }
     }
 
-    if (name_len + 4 < COLS) {
-        if (dash_position == 0 && !found_paren_start) {
-            move(nh, (COLS - name_len) / 2);
-            printw("%s", trimmed_name);
-        } else {
-            char artist[NAME_MAX] = { 0 };
-            char name[NAME_MAX] = { 0 };
-            char extra[NAME_MAX] = { 0 };
-            if (dash_position > 0) {
-                snprintf(artist, NAME_MAX, "%.*s", dash_position - 1, trimmed_name);
-                dash_position += 2;
-            }
-            if (found_paren_start) {
-                snprintf(extra, NAME_MAX, "%.*s", name_len - paren_start, trimmed_name + paren_start);
-                paren_start -= 1;
-            }
-            snprintf(name, NAME_MAX, "%.*s", paren_start - dash_position, trimmed_name + dash_position);
-            char* texts[] = { artist, name, extra };
-
-            int line = 0;
-            for (int i = 0; i < 3; i++) {
-                char* t = texts[i];
-                int len = strlen(t);
-                if (len == 0)
-                    continue;
-                move(nh + line, (COLS - len) / 2);
-                if (i == 0)
-                    attron(COLOR_PAIR(PAIR_LIGHTGREY));
-                if (i == 2)
-                    attron(COLOR_PAIR(PAIR_GREY));
-                printw("%s", t);
-                if (i == 0)
-                    attroff(COLOR_PAIR(PAIR_LIGHTGREY));
-                if (i == 2)
-                    attroff(COLOR_PAIR(PAIR_GREY));
-                line += 1;
-            }
-        }
+    if (dash_position == 0 && !found_paren_start) {
+        move(nh, (COLS - name_len) / 2);
+        printw("%s", trimmed_name);
     } else {
-        move(nh, 2);
-        printw("%.*s", COLS - 4, trimmed_name);
+        char artist[NAME_MAX] = { 0 };
+        char name[NAME_MAX] = { 0 };
+        char extra[NAME_MAX] = { 0 };
+        char* texts[] = { artist, name, extra };
+        int ls[3] = { 0 };
+        if (dash_position > 0) {
+            ls[0] = snprintf(artist, NAME_MAX, "%.*s", dash_position - 1, trimmed_name);
+            dash_position += 2;
+        }
+        if (found_paren_start) {
+            ls[2] = snprintf(extra, NAME_MAX, "%.*s", name_len - paren_start, trimmed_name + paren_start);
+            paren_start -= 1;
+        }
+        ls[1] = snprintf(name, NAME_MAX, "%.*s", paren_start - dash_position, trimmed_name + dash_position);
+
+        int line = 0;
+        for (int i = 0; i < 3; i++) {
+            char* t = texts[i];
+            int len = ls[i];
+            if (len == 0)
+                continue;
+            bool trim = false;
+            if (len >= COLS) {
+                len = COLS - 2;
+                trim = true;
+            }
+            move(nh + line, (COLS - len) / 2);
+            if (i == 0)
+                attron(COLOR_PAIR(PAIR_LIGHTGREY));
+            if (i == 2)
+                attron(COLOR_PAIR(PAIR_GREY));
+            if (trim)
+                printw("%.*s...", len - 3, t);
+            else
+                printw("%s", t);
+            if (i == 0)
+                attroff(COLOR_PAIR(PAIR_LIGHTGREY));
+            if (i == 2)
+                attroff(COLOR_PAIR(PAIR_GREY));
+            line += 1;
+        }
     }
 
     TEXT_COLOR(PAIR_GREY, {
@@ -203,7 +211,7 @@ void draw_waiting_screen(int i, music* current_music, time_t start, int wait, bo
     swprintf(time_buf, BUF_SIZE, L"Next music will play in %s | ", get_time_str(wait - i));
     const int time_buf_len = wcslen(time_buf);
 
-    if (COLS < time_buf_len || LINES < 8) {
+    if (SCREEN_SIZE_LIMIT) {
         move(0, 0);
         printw("Screen is too small!");
         return;
@@ -216,7 +224,7 @@ void draw_waiting_screen(int i, music* current_music, time_t start, int wait, bo
             int ddiff = (elapsed * 1) % music_name_len;
             wchar_t nbuf[32] = { 0 };
             wchar_t status_buf[256] = { 0 };
-            swprintf(nbuf, 32, L"%.*s ░ %.*s", music_name_len - ddiff, music_name + ddiff, ddiff, music_name);
+            swprintf(nbuf, 32, L"%.*s " BOX_4 " %.*s", music_name_len - ddiff, music_name + ddiff, ddiff, music_name);
             swprintf(status_buf, COLS - 10, L" %s %ls %s ", xs[rand() % 16], nbuf, xs[rand() % 16]);
             draw_vertical_line(0);
             move(0, (COLS - wcslen(status_buf)) / 2);
@@ -227,10 +235,11 @@ void draw_waiting_screen(int i, music* current_music, time_t start, int wait, bo
     TEXT_COLOR(PAIR_E8, {
         if (reloaded > 0) {
             move(LINES - 2, 0);
-            printw("░░░░ %d ░░ 󱍚  list reloaded!", reloaded);
+            printw(BOX_4 BOX_4 BOX_4 BOX_4 " %d " BOX_4 BOX_4 " 󱍚  list reloaded!", reloaded);
         }
     });
 
+    int h = (LINES - 6) / 2;
     int bar_end = (COLS - time_buf_len - 8) / 2;
 
     TEXT_COLOR(pause ? PAIR_E7
@@ -242,19 +251,18 @@ void draw_waiting_screen(int i, music* current_music, time_t start, int wait, bo
                 : repeat ? " "
                          : " ";
 
-            draw_vertical_line(4);
-            move(4, bar_end);
+            draw_vertical_line(COLS >= 45 ? h - 1 : 4);
+            move(COLS >= 45 ? h - 1 : 4, bar_end);
             int diff = elapsed % time_buf_len;
             printw(" %s %.*ls%.*ls %s ", info, time_buf_len - diff, time_buf + diff, diff, time_buf, info);
         });
 
-    if (COLS > 60 && LINES - 6 >= 9) {
-        int h = (LINES - 6) / 2;
+    if (COLS >= 45 && LINES >= 6) {
         TEXT_COLOR(PAIR_E8, {
             for (int i = 0; i < COLS; i++) {
                 if (i < bar_end || i > bar_end + time_buf_len + 7) {
                     move(h + 1, i);
-                    printw("░");
+                    printw(BOX_4);
                 }
             }
             move(h + 1, bar_end);
@@ -264,7 +272,7 @@ void draw_waiting_screen(int i, music* current_music, time_t start, int wait, bo
             for (int i = 0; i < COLS; i++) {
                 if (i < bar_end || i > bar_end + time_buf_len + 7) {
                     move(h + 3, i);
-                    printw("░");
+                    printw(BOX_4);
                 }
             }
             move(h + 3, bar_end);
@@ -274,7 +282,7 @@ void draw_waiting_screen(int i, music* current_music, time_t start, int wait, bo
             for (int i = 0; i < COLS; i++) {
                 if (i < bar_end || i > bar_end + time_buf_len + 7) {
                     move(h + 5, i);
-                    printw("░");
+                    printw(BOX_4);
                 }
             }
             move(h + 5, bar_end);
@@ -285,7 +293,7 @@ void draw_waiting_screen(int i, music* current_music, time_t start, int wait, bo
     TEXT_COLOR(PAIR_LIGHTGREY, {
         draw_vertical_line(LINES - 1);
         move(LINES - 1, 0);
-        printw(" %zu 󱍚  ░ %d 󰐑  ░", list->count, session_listen_count);
+        printw(" %zu 󱍚  " BOX_4 " %d 󰐑  ", list->count, session_listen_count);
 
         const char* elapsed_str = get_time_str(elapsed);
         move(LINES - 1, (COLS - (6 + strlen(elapsed_str))));
@@ -294,7 +302,7 @@ void draw_waiting_screen(int i, music* current_music, time_t start, int wait, bo
 
     TEXT_COLOR(PAIR_E6, {
         move(LINES - 1, (COLS - 8) / 2);
-        printw("  rmp™  ");
+        printw("   rmp™  ");
     });
 }
 
@@ -550,7 +558,7 @@ int rmp_play(int argc, char** argv, char** envp)
             if (WIFEXITED(status) > 0)
                 break;
             clear();
-            if (COLS < 35 || LINES < 8) {
+            if (SCREEN_SIZE_LIMIT) {
                 move(0, 0);
                 printw("Screen is too small!");
                 refresh();
